@@ -5,7 +5,7 @@ import asyncio
 import re
 from datetime import datetime
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from feishu_utils import FeishuClient
 
 # 环境变量
@@ -178,7 +178,7 @@ async def main():
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
         page = await context.new_page()
-        await stealth_async(page)
+        await Stealth().apply_stealth_async(page)
         
         q_data = await get_qiuzhifangzhou_data(page)
         stats["qiuzhifangzhou"] = len(q_data)
