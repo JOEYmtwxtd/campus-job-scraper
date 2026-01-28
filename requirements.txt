@@ -1,5 +1,0 @@
-playwright
-playwright-stealth
-gspread
-google-auth
-pandas
