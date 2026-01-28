@@ -1,4 +1,0 @@
-playwright
-playwright-stealth
-requests
-pandas
