@@ -93,36 +93,105 @@ async def get_givemeoc_data(page):
     try:
         await page.goto("https://www.givemeoc.com/", wait_until="networkidle", timeout=90000)
         await asyncio.sleep(15)
-        page_jobs = await page.evaluate("""
-            () => {
-                const results = [];
-                const rows = document.querySelectorAll('tr');
-                rows.forEach(row => {
-                    const cells = Array.from(row.querySelectorAll('td'));
-                    if (cells.length >= 8) {
-                        const company = cells[0].innerText.trim();
-                        if (company === "公司" || !company) return;
-                        const a = row.querySelector('a');
-                        results.push({
-                            '公司名称': company,
-                            '公司类型': cells[1].innerText.trim(),
-                            '行业类型': cells[2].innerText.trim(),
-                            '招聘岗位': cells[3].innerText.trim(),
-                            '招聘届别': cells[4].innerText.trim(),
-                            '工作地点': cells[5].innerText.trim(),
-                            '网申链接': a ? a.href : '',
-                            '招聘公告原文链接': a ? a.href : '',
-                            '截止时间': cells[7].innerText.trim()
-                        });
-                    }
-                });
-                return results;
-            }
-        """)
-        jobs.extend(page_jobs)
-        print(f"  ✅ GiveMeOC 抓取到 {len(page_jobs)} 条")
+        await page.wait_for_selector('table')
+
+        page_num = 1
+        while True:
+            print(f"  📄 正在抓取 GiveMeOC 第 {page_num} 页...")
+            page_jobs = await page.evaluate("""
+                () => {
+                    const results = [];
+                    const rows = document.querySelectorAll('tr');
+                    rows.forEach(row => {
+                        const cells = Array.from(row.querySelectorAll('td'));
+                        if (cells.length >= 10) {
+                            const company = cells[0].innerText.trim();
+                            if (company === "公司" || !company) return;
+                            const a = row.querySelector('a');
+                            results.push({
+                                '公司名称': company,
+                                '公司类型': cells[1].innerText.trim(),
+                                '行业类型': cells[2].innerText.trim(),
+                                '招聘岗位': cells[3].innerText.trim(),
+                                '招聘届别': cells[4].innerText.trim(),
+                                '工作地点': cells[5].innerText.trim(),
+                                '网申链接': a ? a.href : '',
+                                '招聘公告原文链接': a ? a.href : '',
+                                '截止时间': cells[9].innerText.trim()
+                            });
+                        }
+                    });
+                    return results;
+                }
+            """)
+
+            if page_jobs:
+                jobs.extend(page_jobs)
+                print(f"  ✅ GiveMeOC 第 {page_num} 页抓取到 {len(page_jobs)} 条，累计: {len(jobs)} 条")
+
+            next_btn = await page.query_selector('button[aria-label="Go to next page"], .pagination-next, button:has-text("下一页"), a:has-text("下一页")')
+            if next_btn and await next_btn.is_enabled() and await next_btn.is_visible():
+                await next_btn.click()
+                await asyncio.sleep(8)
+                page_num += 1
+            else:
+                print(f"  🏁 GiveMeOC 已到达最后一页，共 {page_num} 页。")
+                break
     except Exception as e:
         print(f"  ❌ GiveMeOC 失败: {e}")
+    return jobs
+
+async def get_careercenter_data(page):
+    print("🚀 启动 CareerCenter 抓取...")
+    jobs = []
+    try:
+        await page.goto("https://www.careercenter.com/jobs", wait_until="networkidle", timeout=90000)
+        await asyncio.sleep(15)
+
+        page_num = 1
+        while True:
+            print(f"  📄 正在抓取 CareerCenter 第 {page_num} 页...")
+            page_jobs = await page.evaluate("""
+                () => {
+                    const results = [];
+                    const jobItems = document.querySelectorAll('.job-item');
+                    jobItems.forEach(item => {
+                        const company = item.querySelector('.company')?.innerText.trim() || '';
+                        const position = item.querySelector('.position')?.innerText.trim() || '';
+                        const deadline = item.querySelector('.deadline')?.innerText.trim() || '';
+                        const link = item.querySelector('.apply-link')?.href || '';
+                        if (company && position) {
+                            results.push({
+                                '公司名称': company,
+                                '公司类型': '',
+                                '行业类型': '',
+                                '招聘届别': '',
+                                '工作地点': '',
+                                '招聘岗位': position,
+                                '网申链接': link,
+                                '招聘公告原文链接': link,
+                                '截止时间': deadline
+                            });
+                        }
+                    });
+                    return results;
+                }
+            """)
+
+            if page_jobs:
+                jobs.extend(page_jobs)
+                print(f"  ✅ CareerCenter 第 {page_num} 页抓取到 {len(page_jobs)} 条，累计: {len(jobs)} 条")
+
+            next_btn = await page.query_selector('button.next, a[rel="next"], .pagination .next')
+            if next_btn and await next_btn.is_enabled() and await next_btn.is_visible():
+                await next_btn.click()
+                await asyncio.sleep(8)
+                page_num += 1
+            else:
+                print(f"  🏁 CareerCenter 已到达最后一页，共 {page_num} 页。")
+                break
+    except Exception as e:
+        print(f"  ❌ CareerCenter 失败: {e}")
     return jobs
 
 async def main():
@@ -135,6 +204,7 @@ async def main():
         all_raw = []
         all_raw.extend(await get_qiuzhifangzhou_data(page))
         all_raw.extend(await get_givemeoc_data(page))
+        all_raw.extend(await get_careercenter_data(page))
         await browser.close()
 
     valid_jobs = []
