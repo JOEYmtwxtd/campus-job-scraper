@@ -36,11 +36,12 @@ async def get_qiuzhifangzhou_data(page):
     try:
         await page.goto("https://www.qiuzhifangzhou.com/campus", wait_until="networkidle", timeout=120000)
         await asyncio.sleep(20)
-        
-        for page_num in range(1, 31): # 最多翻 30 页，确保全量
+
+        page_num = 1
+        while True:
             print(f"  📄 正在全力抓取第 {page_num} 页...")
             await page.wait_for_selector(".ag-row", timeout=30000)
-            
+
             page_jobs = await page.evaluate("""
                 () => {
                     const results = [];
@@ -52,7 +53,7 @@ async def get_qiuzhifangzhou_data(page):
                         if (company && company !== "公司") {
                             results.push({
                                 '公司名称': company,
-                                '公司类型': getT("type"), 
+                                '公司类型': getT("type"),
                                 '行业类型': getT("industry"),
                                 '招聘届别': getT("batch"),
                                 '工作地点': getT("locations"),
@@ -66,22 +67,35 @@ async def get_qiuzhifangzhou_data(page):
                     return results;
                 }
             """)
-            
+
             if not page_jobs:
                 print("  ⚠️ 本页没抓到数据，尝试再等会儿...")
                 await asyncio.sleep(5)
+                page_num += 1
+                if page_num > 50:
+                    break
                 continue
-                
+
             jobs.extend(page_jobs)
             print(f"  ✅ 第 {page_num} 页抓取成功，当前累计: {len(jobs)} 条")
-            
-            # 暴力寻找下一页按钮并模拟真实点击
-            next_btn = await page.query_selector("button:has-text('下一页'), .ag-paging-button:has-text('下一页'), [aria-label='Next Page']")
-            if next_btn and await next_btn.is_visible():
-                await next_btn.click()
-                await asyncio.sleep(8) # 翻页后死等加载
+
+            # 检查下一页按钮是否存在且可用
+            can_go_next = await page.evaluate("""
+                () => {
+                    const nextBtn = document.querySelector('[ref="btNext"]') ||
+                                   document.querySelector('.ag-paging-button[ref="btNext"]') ||
+                                   document.querySelector('button[aria-label="Next Page"]');
+                    if (!nextBtn) return false;
+                    return !nextBtn.disabled && !nextBtn.classList.contains('ag-disabled');
+                }
+            """)
+
+            if can_go_next:
+                await page.click('[ref="btNext"], .ag-paging-button[ref="btNext"], button[aria-label="Next Page"]')
+                await asyncio.sleep(8)
+                page_num += 1
             else:
-                print("  🏁 已翻到最后一页。")
+                print(f"  🏁 已翻到最后一页，共 {page_num} 页。")
                 break
     except Exception as e:
         print(f"  ❌ 抓取中断: {e}")
@@ -95,24 +109,40 @@ async def get_givemeoc_data(page):
         await asyncio.sleep(15)
         await page.wait_for_selector('table')
 
+        # 获取总页数
+        total_pages = await page.evaluate("""
+            () => {
+                const pageLinks = document.querySelectorAll('a[href*="paged="]');
+                let max = 1;
+                pageLinks.forEach(link => {
+                    const match = link.href.match(/paged=(\\d+)/);
+                    if (match) max = Math.max(max, parseInt(match[1]));
+                });
+                return max;
+            }
+        """)
+        print(f"  📊 GiveMeOC 共 {total_pages} 页")
+
         page_num = 1
-        while True:
-            print(f"  📄 正在抓取 GiveMeOC 第 {page_num} 页...")
+        while page_num <= total_pages:
+            print(f"  📄 正在抓取 GiveMeOC 第 {page_num}/{total_pages} 页...")
+
             page_jobs = await page.evaluate("""
                 () => {
                     const results = [];
-                    const rows = document.querySelectorAll('tr');
+                    const rows = document.querySelectorAll('table tr');
                     rows.forEach(row => {
                         const cells = Array.from(row.querySelectorAll('td'));
                         if (cells.length >= 10) {
                             const company = cells[0].innerText.trim();
-                            if (company === "公司" || !company) return;
-                            const a = row.querySelector('a');
+                            if (!company || company === '公司名称') return;
+                            const linkCell = cells[10] || cells[11];
+                            const a = linkCell ? linkCell.querySelector('a') : row.querySelector('a');
                             results.push({
                                 '公司名称': company,
                                 '公司类型': cells[1].innerText.trim(),
                                 '行业类型': cells[2].innerText.trim(),
-                                '招聘岗位': cells[3].innerText.trim(),
+                                '招聘岗位': cells[6].innerText.trim(),
                                 '招聘届别': cells[4].innerText.trim(),
                                 '工作地点': cells[5].innerText.trim(),
                                 '网申链接': a ? a.href : '',
@@ -129,14 +159,14 @@ async def get_givemeoc_data(page):
                 jobs.extend(page_jobs)
                 print(f"  ✅ GiveMeOC 第 {page_num} 页抓取到 {len(page_jobs)} 条，累计: {len(jobs)} 条")
 
-            next_btn = await page.query_selector('button[aria-label="Go to next page"], .pagination-next, button:has-text("下一页"), a:has-text("下一页")')
-            if next_btn and await next_btn.is_enabled() and await next_btn.is_visible():
-                await next_btn.click()
-                await asyncio.sleep(8)
-                page_num += 1
-            else:
-                print(f"  🏁 GiveMeOC 已到达最后一页，共 {page_num} 页。")
-                break
+            page_num += 1
+            if page_num <= total_pages:
+                # 使用URL直接跳转到下一页
+                next_url = f"https://www.givemeoc.com/?paged={page_num}"
+                await page.goto(next_url, wait_until="networkidle", timeout=60000)
+                await asyncio.sleep(5)
+
+        print(f"  🏁 GiveMeOC 抓取完成，共 {total_pages} 页。")
     except Exception as e:
         print(f"  ❌ GiveMeOC 失败: {e}")
     return jobs
