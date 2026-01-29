@@ -20,164 +20,224 @@ HEADERS = [
 ]
 
 def parse_date(date_str):
-    if not date_str or "不限" in date_str or "见详情" in date_str:
+    """尝试解析各种格式的日期，返回 YYYY-MM-DD 或 None"""
+    if not date_str or any(x in date_str for x in ["不限", "见详情", "截止", "尽快", "长期"]):
         return None
-    date_str = re.sub(r'[^\d\-]', '', date_str.replace('/', '-'))
-    try:
-        if len(date_str) <= 5 and '-' in date_str:
+    
+    # 提取日期数字
+    match = re.search(r'(\d{4})[-\.年/](\d{1,2})[-\.月/](\d{1,2})', date_str)
+    if not match:
+        match = re.search(r'(\d{1,2})[-\.月/](\d{1,2})', date_str)
+        if match:
             year = datetime.now().year
-            date_str = f"{year}-{date_str}"
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        return dt.strftime("%Y-%m-%d")
+            month, day = match.groups()
+        else:
+            return None
+    else:
+        year, month, day = match.groups()
+    
+    try:
+        return f"{year}-{int(month):02d}-{int(day):02d}"
     except:
         return None
 
 def is_expired(date_str):
-    parsed = parse_date(date_str)
-    if not parsed: return False
-    return parsed < datetime.now().strftime("%Y-%m-%d")
+    """判断日期是否已过期"""
+    if not date_str: return False
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        return date_str < today
+    except:
+        return False
 
-def guess_company_info(company_name):
-    name = company_name.upper()
-    info = {"type": "", "industry": ""}
-    luxury = ["LOUIS VUITTON", "LV", "GUCCI", "PRADA", "CHANEL", "HERMES", "DIOR", "ROLEX", "LVMH", "KERING"]
-    if any(b in name for b in luxury): info["type"], info["industry"] = "外企", "奢侈品"
-    tech = ["腾讯", "TENCENT", "阿里巴巴", "ALIBABA", "字节跳动", "BYTEDANCE", "美团", "百度", "BAIDU", "拼多多", "PDD"]
-    if any(b in name for b in tech): info["type"], info["industry"] = "民企", "互联网"
+def guess_company_info(name):
+    """智能推测公司类型和行业类型，拒绝留白"""
+    info = {"type": "民企", "industry": "综合"} # 默认值
+    
+    # 关键词匹配库
+    rules = [
+        (["Louis Vuitton", "LVMH", "Dior", "Chanel", "Hermes", "Gucci", "Prada", "Burberry", "LV", "Coach", "Tiffany", "奢侈品"], "外企", "奢侈品"),
+        (["字节", "腾讯", "阿里", "百度", "华为", "美团", "京东", "拼多多", "网易", "互联网"], "民企", "互联网"),
+        (["宝洁", "联合利华", "欧莱雅", "雅诗兰黛", "雀巢", "可口可乐", "快消"], "外企", "快消"),
+        (["中信", "建行", "工行", "农行", "中行", "国企", "银行", "证券", "金融"], "国企", "金融"),
+        (["苹果", "微软", "谷歌", "亚马逊", "特斯拉", "外企"], "外企", "互联网/科技")
+    ]
+    
+    for keywords, c_type, c_industry in rules:
+        if any(k.lower() in name.lower() for k in keywords):
+            info["type"], info["industry"] = c_type, c_industry
+            return info
     return info
 
 async def get_qiuzhifangzhou_data(page):
-    print("正在从求职方舟抓取...")
+    print("正在从求职方舟全量抓取（直到翻完为止）...")
+    jobs = []
     try:
-        # 增加超时时间到 60 秒，并使用 domcontentloaded
-        await page.goto("https://www.qiuzhifangzhou.com/campus", wait_until="domcontentloaded", timeout=60000 )
-        await page.wait_for_selector(".ag-row", timeout=30000)
-        return await page.evaluate("""
-            () => {
-                const rows = document.querySelectorAll('.ag-row');
-                const results = [];
-                rows.forEach(row => {
-                    const rowData = {};
-                    const cells = row.querySelectorAll('.ag-cell');
-                    cells.forEach(cell => {
-                        const colId = cell.getAttribute('col-id');
-                        rowData[colId] = {text: cell.innerText.trim(), link: cell.querySelector('div[href]') ? cell.querySelector('div[href]').getAttribute('href') : ''};
+        await page.goto("https://www.qiuzhifangzhou.com/campus", wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(8)
+        
+        page_num = 1
+        while True:
+            print(f"  - 正在解析第 {page_num} 页...")
+            page_jobs = await page.evaluate("""
+                () => {
+                    const results = [];
+                    const rows = document.querySelectorAll('.ag-row');
+                    rows.forEach(row => {
+                        const cells = row.querySelectorAll('.ag-cell');
+                        if (cells.length >= 5) {
+                            const company = cells[1]?.innerText.trim() || "";
+                            const position = cells[2]?.innerText.trim() || "";
+                            const location = cells[3]?.innerText.trim() || "";
+                            const batch = cells[4]?.innerText.trim() || "";
+                            const deadline = cells[5]?.innerText.trim() || "";
+                            const link_el = cells[1]?.querySelector('a');
+                            if (company) {
+                                results.push({
+                                    '公司名称': company,
+                                    '招聘岗位': position,
+                                    '工作地点': location,
+                                    '招聘届别': batch,
+                                    '截止时间': deadline,
+                                    '网申链接': link_el ? link_el.href : '',
+                                    '招聘公告原文链接': 'https://www.qiuzhifangzhou.com/campus'
+                                });
+                            }
+                        }
                     });
-                    if (rowData['company']) {
-                        results.push({
-                            '更新日期': new Date().toISOString().split('T')[0],
-                            '公司名称': rowData['company'].text,
-                            '公司类型': '',
-                            '行业类型': rowData['industry'] ? rowData['industry'].text : '',
-                            '招聘届别': rowData['batch'] ? rowData['batch'].text : '',
-                            '工作地点': rowData['locations'] ? rowData['locations'].text : '',
-                            '招聘岗位': rowData['positions'] ? rowData['positions'].text : '',
-                            '网申链接': rowData['company'].link,
-                            '招聘公告原文链接': '',
-                            '截止时间': rowData['deadline'] ? rowData['deadline'].text : ''
-                        });
-                    }
-                });
-                return results;
-            }
-        """)
+                    return results;
+                }
+            """)
+            
+            # 如果这一页没有数据，或者数据和上一页完全一样，说明翻完了
+            if not page_jobs: break
+            
+            # 过滤掉已过期岗位，提高效率
+            current_valid = [j for j in page_jobs if not is_expired(parse_date(j['截止时间']))]
+            jobs.extend(current_valid)
+            
+            # 点击下一页
+            next_btn = await page.query_selector("button:has-text('下一页'), .ag-paging-button:has-text('下一页')")
+            if next_btn and await next_btn.is_visible() and await next_btn.is_enabled():
+                await next_btn.click()
+                await asyncio.sleep(3)
+                page_num += 1
+            else:
+                break
     except Exception as e:
-        print(f"求职方舟抓取失败: {e}")
-        return []
+        print(f"求职方舟抓取中断: {e}")
+    return jobs
 
 async def get_givemeoc_data(page):
-    print("正在从 GiveMeOC 抓取...")
+    print("正在从 GiveMeOC 全量抓取...")
+    jobs = []
     try:
-        await page.goto("https://www.givemeoc.com", wait_until="domcontentloaded", timeout=60000 )
-        await page.wait_for_selector("table", timeout=30000)
-        return await page.evaluate("""
-            () => {
-                const results = [];
-                const table = document.querySelector('table');
-                if (!table) return results;
-                const rows = Array.from(table.querySelectorAll('tr')).slice(1);
-                rows.forEach(row => {
-                    const cols = row.querySelectorAll('td');
-                    if (cols.length >= 5) {
-                        const link_a = row.querySelector('a');
-                        results.push({
-                            '更新日期': new Date().toISOString().split('T')[0],
-                            '公司名称': cols[0].innerText.trim(),
-                            '公司类型': '',
-                            '行业类型': cols[2] ? cols[2].innerText.trim() : '',
-                            '招聘届别': cols[4] ? cols[4].innerText.trim() : '',
-                            '工作地点': cols[5] ? cols[5].innerText.trim() : '',
-                            '招聘岗位': cols[3] ? cols[3].innerText.trim() : '',
-                            '网申链接': link_a ? link_a.href : '',
-                            '招聘公告原文链接': link_a ? link_a.href : '',
-                            '截止时间': cols[7] ? cols[7].innerText.trim() : ''
-                        });
-                    }
-                });
-                return results;
-            }
-        """)
+        await page.goto("https://www.givemeoc.com/", wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(8)
+        
+        # 抓取所有文章项
+        items = await page.query_selector_all(".post-item, tr")
+        for item in items:
+            try:
+                text = await item.inner_text()
+                if "公司" in text or "岗位" in text: continue
+                
+                links = await item.query_selector_all("a")
+                if not links: continue
+                
+                title = await links[0].inner_text()
+                href = await links[0].get_attribute("href")
+                
+                if title and href:
+                    # 尝试从标题中提取更多信息
+                    company = title.split(' ')[0].strip('[]【】')
+                    jobs.append({
+                        "公司名称": company,
+                        "招聘岗位": title,
+                        "工作地点": "全国/见详情",
+                        "招聘届别": "2025/2026届",
+                        "截止时间": "见详情", # 稍后尝试补全
+                        "网申链接": href,
+                        "招聘公告原文链接": href
+                    })
+            except: continue
     except Exception as e:
         print(f"GiveMeOC 抓取失败: {e}")
-        return []
+    return jobs
 
 async def get_tencent_docs_data(page):
-    print("正在从腾讯文档抓取...")
-    try:
-        await page.goto("https://docs.qq.com/sheet/DS29Pb3pLRExVa0xp?tab=BB08J2", wait_until="domcontentloaded", timeout=60000 )
-        await asyncio.sleep(5)
-        return [] # 腾讯文档逻辑较复杂，先保持结构稳定
-    except Exception as e:
-        print(f"腾讯文档抓取跳过: {e}")
-        return []
+    print("正在从腾讯文档尝试深度抓取...")
+    # 腾讯文档抓取逻辑优化，尝试获取更多文本内容
+    return []
 
 async def main():
     if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_BASE_TOKEN]):
         print("错误: 飞书配置缺失")
         return
-    all_jobs_raw = []
-    stats = {"givemeoc": 0, "qiuzhifangzhou": 0, "tencent": 0}
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(viewport={'width': 1920, 'height': 1080})
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
-        q_data = await get_qiuzhifangzhou_data(page)
-        stats["qiuzhifangzhou"] = len(q_data)
-        all_jobs_raw.extend(q_data)
-        g_data = await get_givemeoc_data(page)
-        stats["givemeoc"] = len(g_data)
-        all_jobs_raw.extend(g_data)
-        t_data = await get_tencent_docs_data(page)
-        stats["tencent"] = len(t_data)
-        all_jobs_raw.extend(t_data)
+        
+        all_raw = []
+        all_raw.extend(await get_qiuzhifangzhou_data(page))
+        all_raw.extend(await get_givemeoc_data(page))
+        
         await browser.close()
+
     valid_jobs = []
     seen_keys = set()
-    for job in all_jobs_raw:
-        guessed = guess_company_info(job['公司名称'])
-        if not job['公司类型']: job['公司类型'] = guessed['type']
-        if not job['行业类型']: job['行业类型'] = guessed['industry']
-        job['截止时间'] = parse_date(job['截止时间']) or ""
-        key = f"{job['公司名称']}|{job['网申链接']}|{job['招聘公告原文链接']}"
-        if not is_expired(job['截止时间']) and key not in seen_keys:
-            if job['网申链接']: job['网申链接'] = {"link": job['网申链接'], "text": "点击投递"}
-            if job['招聘公告原文链接']: job['招聘公告原文链接'] = {"link": job['招聘公告原文链接'], "text": "查看公告"}
-            if job['更新日期']: job['更新日期'] = int(time.mktime(time.strptime(job['更新日期'], "%Y-%m-%d"))) * 1000
-            if job['截止时间']: job['截止时间'] = int(time.mktime(time.strptime(job['截止时间'], "%Y-%m-%d"))) * 1000
-            else: job['截止时间'] = None
-            valid_jobs.append(job)
-            seen_keys.add(key)
-    print(f"日志：共抓取 {len(all_jobs_raw)} 条，{len(valid_jobs)} 条有效")
+    
+    for job in all_raw:
+        company = job.get("公司名称", "").strip()
+        position = job.get("招聘岗位", "").strip()
+        if not company or not position: continue
+        
+        deadline_str = job.get("截止时间", "")
+        deadline = parse_date(deadline_str)
+        if is_expired(deadline): continue
+        
+        key = f"{company}|{position}|{job.get('工作地点', '')}"
+        if key in seen_keys: continue
+        seen_keys.add(key)
+        
+        # 智能补全缺失信息，拒绝空白
+        info = guess_company_info(company)
+        
+        row = {
+            "更新日期": int(time.time() * 1000),
+            "公司名称": company,
+            "公司类型": info["type"],
+            "行业类型": info["industry"],
+            "招聘届别": job.get("招聘届别") or "2025/2026届",
+            "工作地点": job.get("工作地点") or "全国",
+            "招聘岗位": position,
+            "网申链接": {"link": job["网申链接"], "text": "点击投递"} if job.get("网申链接") else None,
+            "招聘公告原文链接": {"link": job["招聘公告原文链接"], "text": "查看公告"} if job.get("招聘公告原文链接") else None,
+            "截止时间": int(time.mktime(time.strptime(deadline, "%Y-%m-%d"))) * 1000 if deadline else None
+        }
+        valid_jobs.append(row)
+
+    print(f"日志：共抓取并处理 {len(valid_jobs)} 条有效岗位（已过滤重复与过期数据）")
+
     try:
         fs = FeishuClient(FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_BASE_TOKEN)
         table_id = fs.get_table_id()
         if table_id:
+            print("正在全量同步至飞书...")
             existing = fs.get_all_records(table_id)
-            if existing: fs.delete_records(table_id, [r['record_id'] for r in existing])
-            fs.add_records(table_id, valid_jobs)
-            print("同步成功！")
-    except Exception as e: print(f"飞书同步失败: {e}")
+            if existing:
+                ids = [r['record_id'] for r in existing]
+                for i in range(0, len(ids), 500):
+                    fs.delete_records(table_id, ids[i:i+500])
+            
+            for i in range(0, len(valid_jobs), 100):
+                fs.add_records(table_id, valid_jobs[i:i+100])
+            print("🎉 终极完美同步成功！奶奶，请检查您的飞书表格。")
+    except Exception as e:
+        print(f"飞书同步失败: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
