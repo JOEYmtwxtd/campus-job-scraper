@@ -40,7 +40,10 @@ async def get_qiuzhifangzhou_data(page):
         page_num = 1
         while True:
             print(f"  📄 正在全力抓取第 {page_num} 页...")
-            await page.wait_for_selector(".ag-row", timeout=30000)
+            try:
+                await page.wait_for_selector(".ag-row", timeout=30000)
+            except:
+                print("  ⚠️ 等待表格超时，尝试继续...")
 
             page_jobs = await page.evaluate("""
                 () => {
@@ -68,34 +71,46 @@ async def get_qiuzhifangzhou_data(page):
                 }
             """)
 
-            if not page_jobs:
-                print("  ⚠️ 本页没抓到数据，尝试再等会儿...")
-                await asyncio.sleep(5)
-                page_num += 1
-                if page_num > 50:
-                    break
-                continue
+            if page_jobs:
+                jobs.extend(page_jobs)
+                print(f"  ✅ 第 {page_num} 页抓取成功，当前累计: {len(jobs)} 条")
 
-            jobs.extend(page_jobs)
-            print(f"  ✅ 第 {page_num} 页抓取成功，当前累计: {len(jobs)} 条")
-
-            # 检查下一页按钮是否存在且可用
-            can_go_next = await page.evaluate("""
+            # 使用JavaScript检查是否还有下一页，并尝试点击
+            has_next = await page.evaluate("""
                 () => {
-                    const nextBtn = document.querySelector('[ref="btNext"]') ||
-                                   document.querySelector('.ag-paging-button[ref="btNext"]') ||
-                                   document.querySelector('button[aria-label="Next Page"]');
-                    if (!nextBtn) return false;
-                    return !nextBtn.disabled && !nextBtn.classList.contains('ag-disabled');
+                    // 查找所有可能的下一页按钮
+                    const selectors = [
+                        '[ref="btNext"]',
+                        '.ag-paging-button-next',
+                        'button[aria-label="Next Page"]',
+                        '.ag-icon-next'
+                    ];
+                    for (const sel of selectors) {
+                        const btn = document.querySelector(sel);
+                        if (btn) {
+                            const parent = btn.closest('button') || btn.closest('[role="button"]') || btn;
+                            const isDisabled = parent.disabled ||
+                                              parent.classList.contains('ag-disabled') ||
+                                              parent.getAttribute('aria-disabled') === 'true';
+                            if (!isDisabled) {
+                                parent.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
                 }
             """)
 
-            if can_go_next:
-                await page.click('[ref="btNext"], .ag-paging-button[ref="btNext"], button[aria-label="Next Page"]')
+            if has_next:
                 await asyncio.sleep(8)
                 page_num += 1
             else:
                 print(f"  🏁 已翻到最后一页，共 {page_num} 页。")
+                break
+
+            if page_num > 100:
+                print("  ⚠️ 已达到最大页数限制")
                 break
     except Exception as e:
         print(f"  ❌ 抓取中断: {e}")
@@ -109,45 +124,61 @@ async def get_givemeoc_data(page):
         await asyncio.sleep(15)
         await page.wait_for_selector('table')
 
-        # 获取总页数
+        # 获取总页数 - 从页面文本或分页链接中提取
         total_pages = await page.evaluate("""
             () => {
+                // 方法1: 从分页链接中获取最大页码
                 const pageLinks = document.querySelectorAll('a[href*="paged="]');
                 let max = 1;
                 pageLinks.forEach(link => {
+                    const text = link.innerText.trim();
+                    const num = parseInt(text);
+                    if (!isNaN(num) && num > max) max = num;
+                    // 也检查href
                     const match = link.href.match(/paged=(\\d+)/);
-                    if (match) max = Math.max(max, parseInt(match[1]));
+                    if (match && parseInt(match[1]) > max) max = parseInt(match[1]);
                 });
+                // 方法2: 查找类似 "第 X 页，共 Y 页" 的文本
+                const pageText = document.body.innerText;
+                const totalMatch = pageText.match(/共\\s*(\\d+)\\s*页/);
+                if (totalMatch && parseInt(totalMatch[1]) > max) {
+                    max = parseInt(totalMatch[1]);
+                }
                 return max;
             }
         """)
         print(f"  📊 GiveMeOC 共 {total_pages} 页")
 
-        page_num = 1
-        while page_num <= total_pages:
+        for page_num in range(1, total_pages + 1):
+            if page_num > 1:
+                next_url = f"https://www.givemeoc.com/?paged={page_num}"
+                await page.goto(next_url, wait_until="networkidle", timeout=60000)
+                await asyncio.sleep(5)
+                await page.wait_for_selector('table', timeout=30000)
+
             print(f"  📄 正在抓取 GiveMeOC 第 {page_num}/{total_pages} 页...")
 
             page_jobs = await page.evaluate("""
                 () => {
                     const results = [];
-                    const rows = document.querySelectorAll('table tr');
+                    const rows = document.querySelectorAll('table tbody tr, table tr');
                     rows.forEach(row => {
                         const cells = Array.from(row.querySelectorAll('td'));
                         if (cells.length >= 10) {
                             const company = cells[0].innerText.trim();
-                            if (!company || company === '公司名称') return;
-                            const linkCell = cells[10] || cells[11];
-                            const a = linkCell ? linkCell.querySelector('a') : row.querySelector('a');
+                            if (!company || company === '公司名称' || company === '公司') return;
+                            // 根据列顺序: 公司名称(0), 公司类型(1), 所属行业(2), 招聘类型(3), 招聘对象(4), 工作地点(5), 岗位(6), 投递进度(7), 更新时间(8), 投递截止(9), 相关链接(10)...
+                            const a = row.querySelector('a');
                             results.push({
                                 '公司名称': company,
-                                '公司类型': cells[1].innerText.trim(),
-                                '行业类型': cells[2].innerText.trim(),
-                                '招聘岗位': cells[6].innerText.trim(),
-                                '招聘届别': cells[4].innerText.trim(),
-                                '工作地点': cells[5].innerText.trim(),
+                                '公司类型': cells[1] ? cells[1].innerText.trim() : '',
+                                '行业类型': cells[2] ? cells[2].innerText.trim() : '',
+                                '招聘岗位': cells[6] ? cells[6].innerText.trim() : '',
+                                '招聘届别': cells[4] ? cells[4].innerText.trim() : '',
+                                '工作地点': cells[5] ? cells[5].innerText.trim() : '',
                                 '网申链接': a ? a.href : '',
                                 '招聘公告原文链接': a ? a.href : '',
-                                '截止时间': cells[9].innerText.trim()
+                                '截止时间': cells[9] ? cells[9].innerText.trim() : ''
                             });
                         }
                     });
@@ -158,15 +189,10 @@ async def get_givemeoc_data(page):
             if page_jobs:
                 jobs.extend(page_jobs)
                 print(f"  ✅ GiveMeOC 第 {page_num} 页抓取到 {len(page_jobs)} 条，累计: {len(jobs)} 条")
+            else:
+                print(f"  ⚠️ GiveMeOC 第 {page_num} 页没有数据")
 
-            page_num += 1
-            if page_num <= total_pages:
-                # 使用URL直接跳转到下一页
-                next_url = f"https://www.givemeoc.com/?paged={page_num}"
-                await page.goto(next_url, wait_until="networkidle", timeout=60000)
-                await asyncio.sleep(5)
-
-        print(f"  🏁 GiveMeOC 抓取完成，共 {total_pages} 页。")
+        print(f"  🏁 GiveMeOC 抓取完成，共 {len(jobs)} 条。")
     except Exception as e:
         print(f"  ❌ GiveMeOC 失败: {e}")
     return jobs
