@@ -20,15 +20,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-         python -m pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           playwright install chromium
 
       - name: Run scraper
-      env:
-        FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-        FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-        FEISHU_BASE_TOKEN: ${{ secrets.FEISHU_BASE_TOKEN }}
-        FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
-    run: python scraper.py
-
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_BASE_TOKEN: ${{ secrets.FEISHU_BASE_TOKEN }}
+          FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
+        run: python scraper.py
